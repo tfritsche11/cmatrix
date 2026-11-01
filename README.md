@@ -3,6 +3,9 @@
 > **Fork note:** this fork (branch `hebrew`, based on the `v2.0` release) adds one option:
 > `-H` rains the 22 Hebrew letters alef..tav (U+05D0..U+05EA without final forms).
 > It needs a terminal font with Hebrew glyphs. Example: `cmatrix -s -H`.
+>
+> Why Hebrew? Inspired by reports of Hebrew-like "source code" glyphs, see
+> [Inside the DMT Laser Experiment](https://www.youtube.com/watch?v=wlLTLIGDZp8).
 
 CMatrix is based on the screensaver from The Matrix website. It shows text
 flying in and out in a terminal like as seen in "The Matrix" movie. It can
@@ -59,11 +62,11 @@ _Note: cmatrix is probably not particularly portable or efficient, but it wont h
 
 #### Screenshots
 
-![Special Font & bold](data/img/capture_bold_font.png?raw=true "cmatrix -bx")
+![Hebrew letters & bold](data/img/capture_hebrew.png?raw=true "cmatrix -ba -H")
 
 #### Screencasts
 
-![Movie-Like Cast](data/img/capture_orig.gif?raw=true "cmatrix -xba")
+![Hebrew Cast](data/img/capture_hebrew.gif?raw=true "cmatrix -ba -H")
 
 ### Maintainers
 - Abishek V Ashok (@abishekvashok) <abishekvashok@gmail.com> [Core]
