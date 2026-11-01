@@ -67,7 +67,28 @@ typedef struct cmatrix {
 int console = 0;
 int xwindow = 0;
 int lock = 0;
+int hebrew = 0;
 cmatrix **matrix = (cmatrix **) NULL;
+
+/* -H: the 22 Hebrew letters alef..tav (U+05D0..U+05EA without final forms). Cell values use a
+ * private range so they never collide with the special values (-1, 0, 1, ' ') kept in the matrix;
+ * they are mapped to the letters only when drawn. */
+#define HEBREW_BASE 0xE000
+#define HEBREW_COUNT 22
+static const char *hebrew_letters[HEBREW_COUNT] = {
+    "א", "ב", "ג", "ד", "ה", "ו", "ז", "ח",
+    "ט", "י", "כ", "ל", "מ", "נ", "ס", "ע",
+    "פ", "צ", "ק", "ר", "ש", "ת",
+};
+
+/* Draws one cell value: a Hebrew letter as UTF-8 (addch cannot output it), anything else as before. */
+static void addcell(int val) {
+    if (hebrew && val >= HEBREW_BASE && val < HEBREW_BASE + HEBREW_COUNT) {
+        addstr(hebrew_letters[val - HEBREW_BASE]);
+    } else {
+        addch(val);
+    }
+}
 int *length = NULL;  /* Length of cols in each line */
 int *spaces = NULL;  /* Spaces left to fill */
 int *updates = NULL; /* What does this do again? */
@@ -127,12 +148,13 @@ void c_die(char *msg, ...) {
 }
 
 void usage(void) {
-    printf(" Usage: cmatrix -[abBcfhlsmVx] [-u delay] [-C color]\n");
+    printf(" Usage: cmatrix -[abBcfhHlsmVx] [-u delay] [-C color]\n");
     printf(" -a: Asynchronous scroll\n");
     printf(" -b: Bold characters on\n");
     printf(" -B: All bold characters (overrides -b)\n");
     printf(" -c: Use Japanese characters as seen in the original matrix. Requires appropriate fonts\n");
     printf(" -f: Force the linux $TERM type to be on\n");
+    printf(" -H: Use the 22 Hebrew letters (alef..tav, no final forms). Requires appropriate fonts\n");
     printf(" -l: Linux mode (uses matrix console font)\n");
     printf(" -L: Lock mode (can be closed from another terminal)\n");
     printf(" -o: Use old-style scrolling\n");
@@ -293,7 +315,7 @@ int main(int argc, char *argv[]) {
 
     /* Many thanks to morph- (morph@jmss.com) for this getopt patch */
     opterr = 0;
-    while ((optchr = getopt(argc, argv, "abBcfhlLnrosmxVu:C:")) != EOF) {
+    while ((optchr = getopt(argc, argv, "abBcfhHlLnrosmxVu:C:")) != EOF) {
         switch (optchr) {
         case 's':
             screensaver = 1;
@@ -334,6 +356,9 @@ int main(int argc, char *argv[]) {
             break;
         case 'c':
             classic = 1;
+            break;
+        case 'H':
+            hebrew = 1;
             break;
         case 'f':
             force = 1;
@@ -435,7 +460,11 @@ if (console) {
     }
 
     /* Set up values for random number generation */
-    if(classic) {
+    if (hebrew) {
+        /* rand() % randnum + randmin covers exactly the HEBREW_COUNT private values. */
+        randmin = HEBREW_BASE;
+        highnum = HEBREW_BASE + HEBREW_COUNT;
+    } else if(classic) {
         /* Japanese character unicode range [they are seen in the original cmatrix] */
         randmin = 12288;
         highnum = 12351;
@@ -682,7 +711,7 @@ if (console) {
                             addch('&');
                         }
                     } else {
-                        addch(matrix[i][j].val);
+                        addcell(matrix[i][j].val);
                     }
 
                     attroff(COLOR_PAIR(COLOR_WHITE));
@@ -739,7 +768,7 @@ if (console) {
                         } else if (lambda && matrix[i][j].val != ' ') {
                             addstr("λ");
                         } else {
-                            addch(matrix[i][j].val);
+                            addcell(matrix[i][j].val);
                         }
                         if (bold == 2 ||
                             (bold == 1 && matrix[i][j].val % 2 == 0)) {
