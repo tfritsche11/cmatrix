@@ -68,6 +68,7 @@ int console = 0;
 int xwindow = 0;
 int lock = 0;
 int hebrew = 0;
+int reality = 0;
 cmatrix **matrix = (cmatrix **) NULL;
 
 /* -H: the 22 Hebrew letters alef..tav (U+05D0..U+05EA without final forms). Cell values use a
@@ -148,13 +149,14 @@ void c_die(char *msg, ...) {
 }
 
 void usage(void) {
-    printf(" Usage: cmatrix -[abBcfhHlsmVx] [-u delay] [-C color]\n");
+    printf(" Usage: cmatrix -[abBcfhHlsmRVx] [-u delay] [-C color]\n");
     printf(" -a: Asynchronous scroll\n");
     printf(" -b: Bold characters on\n");
     printf(" -B: All bold characters (overrides -b)\n");
     printf(" -c: Use Japanese characters as seen in the original matrix. Requires appropriate fonts\n");
     printf(" -f: Force the linux $TERM type to be on\n");
     printf(" -H: Use the 22 Hebrew letters (alef..tav, no final forms). Requires appropriate fonts\n");
+    printf(" -R: codeofreality.org look: full-height strips in Nord orange, glyphs U+E100..U+E11D (or -H)\n");
     printf(" -l: Linux mode (uses matrix console font)\n");
     printf(" -L: Lock mode (can be closed from another terminal)\n");
     printf(" -o: Use old-style scrolling\n");
@@ -289,6 +291,236 @@ void resize_screen(void) {
     refresh();
 }
 
+/* -R "reality" mode: the falling-glyph background of codeofreality.org, ported to the terminal.
+ * Every 2nd column holds one strip of LINES+10 glyphs that spans the whole screen height; its
+ * bottom glyph is the head. Strips fall at their own speed, glyphs flicker, and the color runs in
+ * Nord Aurora orange (nord12) from near-black at the top to a bold head (256-color terminals).
+ *
+ * Output glyphs (not to be confused with the internal HEBREW_BASE cell values): by default the 30
+ * Private Use codepoints U+E100..U+E11D, one per char of "abcdefghijklmnopqrstuvwxyz1234". No font is
+ * shipped; map that range to a font of your choice, e.g. kitty: symbol_map U+E100-U+E11D <font>.
+ * With -H the strips use the Hebrew letters instead. */
+#define REALITY_PUA_BASE 0xE100
+#define REALITY_PUA_COUNT 30
+#define REALITY_TAIL_EXTRA 10        /* strip length = LINES + 10, as on the site */
+/* Site: 0.5..2.0 px/frame at 60 fps in 16 px cells, times its idle (no scroll) factor 0.3. */
+#define REALITY_SPEED_MIN 0.5625
+#define REALITY_SPEED_SPAN 1.6875
+#define REALITY_MUTATE_PER_S 1.2     /* 2 % per 60 fps frame */
+
+enum { RP_TAIL = 10, RP_DARK, RP_RED, RP_DEEP, RP_ORANGE, RP_HEAD };
+
+typedef struct {
+    double y;                        /* row of the strip's top glyph; negative = above the screen */
+    double speed;                    /* rows per second */
+    unsigned char *glyph;            /* LINES + REALITY_TAIL_EXTRA glyph indices */
+} reality_col;
+
+static reality_col *reality_cols = NULL;
+static int reality_ncols = 0;
+static int reality_len = 0;
+static char reality_pua[REALITY_PUA_COUNT][4];
+
+static double reality_rand01(void) {
+    return (double) rand() / ((double) RAND_MAX + 1.0);
+}
+
+static int reality_glyph_count(void) {
+    return hebrew ? HEBREW_COUNT : REALITY_PUA_COUNT;
+}
+
+static int reality_floor(double v) {
+    int i = (int) v;
+    return (v < 0 && (double) i != v) ? i - 1 : i;
+}
+
+static void reality_fill(reality_col *c) {
+    int n = reality_glyph_count();
+    for (int k = 0; k < reality_len; k++) {
+        c->glyph[k] = (unsigned char) (rand() % n);
+    }
+}
+
+static void reality_free(void) {
+    for (int j = 0; j < reality_ncols; j++) {
+        free(reality_cols[j].glyph);
+    }
+    free(reality_cols);
+    reality_cols = NULL;
+    reality_ncols = 0;
+}
+
+static void reality_init(void) {
+    reality_free();
+    reality_ncols = (COLS + 1) / 2;
+    reality_len = LINES + REALITY_TAIL_EXTRA;
+    reality_cols = nmalloc(sizeof(reality_col) * reality_ncols);
+    for (int j = 0; j < reality_ncols; j++) {
+        reality_col *c = &reality_cols[j];
+        c->glyph = nmalloc((size_t) reality_len);
+        c->y = -reality_rand01() * LINES;
+        c->speed = REALITY_SPEED_MIN + reality_rand01() * REALITY_SPEED_SPAN;
+        reality_fill(c);
+    }
+}
+
+static void reality_colors(void) {
+    for (int k = 0; k < REALITY_PUA_COUNT; k++) {
+        unsigned cp = REALITY_PUA_BASE + (unsigned) k;  /* 3-byte UTF-8 */
+        reality_pua[k][0] = (char) (0xE0 | (cp >> 12));
+        reality_pua[k][1] = (char) (0x80 | ((cp >> 6) & 0x3F));
+        reality_pua[k][2] = (char) (0x80 | (cp & 0x3F));
+        reality_pua[k][3] = '\0';
+    }
+    if (!has_colors()) {
+        return;
+    }
+    short bg = COLOR_BLACK;
+#ifdef HAVE_USE_DEFAULT_COLORS
+    if (use_default_colors() != ERR) {
+        bg = -1;
+    }
+#endif
+    if (COLORS >= 256) {
+        /* Nord Aurora orange (nord12 #d08770) at 30/45/65/85/100 % brightness, nearest xterm-256. */
+        init_pair(RP_TAIL, 236, bg);
+        init_pair(RP_DARK, 238, bg);
+        init_pair(RP_RED, 95, bg);
+        init_pair(RP_DEEP, 131, bg);
+        init_pair(RP_ORANGE, 173, bg);
+        init_pair(RP_HEAD, 173, bg);
+    } else {
+        init_pair(RP_TAIL, COLOR_RED, bg);
+        init_pair(RP_DARK, COLOR_RED, bg);
+        init_pair(RP_RED, COLOR_RED, bg);
+        init_pair(RP_DEEP, COLOR_RED, bg);
+        init_pair(RP_ORANGE, COLOR_YELLOW, bg);
+        init_pair(RP_HEAD, COLOR_YELLOW, bg);
+    }
+}
+
+/* Color pair and attributes for glyph i of a strip (0 = top, reality_len - 1 = head). */
+static attr_t reality_attr(int i) {
+    double l = (double) i / (double) reality_len;
+    if (i == reality_len - 1) {
+        return COLOR_PAIR(RP_HEAD) | A_BOLD;
+    }
+    if (l > 0.9) {
+        return COLOR_PAIR(RP_ORANGE) | A_BOLD;
+    }
+    if (l > 0.75) {
+        return COLOR_PAIR(RP_DEEP);
+    }
+    if (l > 0.6) {
+        return COLOR_PAIR(RP_RED);
+    }
+    if (l > 0.3) {
+        return COLOR_PAIR(RP_DARK);
+    }
+    return COLOR_PAIR(RP_TAIL);
+}
+
+static void reality_draw_glyph(int g) {
+    addstr(hebrew ? hebrew_letters[g] : reality_pua[g]);
+}
+
+static double reality_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double) ts.tv_sec + (double) ts.tv_nsec / 1e9;
+}
+
+/* Main loop for -R; never returns (exits through finish()). */
+static void reality_loop(int screensaver, int *update) {
+    int pause = 0;
+    double last = reality_now();
+
+    reality_colors();
+    reality_init();
+    clear();
+
+    while (1) {
+        if (signal_status == SIGINT || signal_status == SIGQUIT || signal_status == SIGTSTP) {
+            if (lock != 1) {
+                finish();
+            }
+            signal_status = 0;
+        }
+        if (signal_status == SIGWINCH) {
+            resize_screen();
+            reality_init();
+            signal_status = 0;
+        }
+
+        int keypress = wgetch(stdscr);
+        if (keypress != ERR) {
+            if (screensaver == 1) {
+#ifdef USE_TIOCSTI
+                do {
+                    char ch = (char) keypress;
+                    ioctl(STDIN_FILENO, TIOCSTI, &ch);
+                } while ((keypress = wgetch(stdscr)) != ERR);
+#endif
+                finish();
+            }
+            if (keypress == 'q' && lock != 1) {
+                finish();
+            } else if (keypress == 'L') {
+                lock = 1;
+            } else if (keypress == 'p' || keypress == 'P') {
+                pause = !pause;
+            } else if (keypress >= '0' && keypress <= '9') {
+                *update = keypress - '0';
+            }
+        }
+
+        double now = reality_now();
+        double dt = now - last;
+        last = now;
+        if (dt > 0.25) {
+            dt = 0.25;  /* after a stall, do not jump */
+        }
+        double mutate = REALITY_MUTATE_PER_S * dt;
+        int n = reality_glyph_count();
+
+        for (int c = 0; c < reality_ncols; c++) {
+            reality_col *col = &reality_cols[c];
+            if (!pause) {
+                col->y += col->speed * dt;
+                if (col->y > LINES) {
+                    /* Whole strip has left the screen: restart above it with fresh glyphs. */
+                    col->y = -reality_rand01() * LINES * 0.5;
+                    reality_fill(col);
+                }
+            }
+            int top = reality_floor(col->y);
+            int x = c * 2;
+            for (int row = 0; row < LINES; row++) {
+                int i = row - top;
+                move(row, x);
+                if (i < 0 || i >= reality_len) {
+                    addch(' ');
+                } else {
+                    if (!pause && reality_rand01() < mutate) {
+                        col->glyph[i] = (unsigned char) (rand() % n);
+                    }
+                    attr_t a = reality_attr(i);
+                    attron(a);
+                    reality_draw_glyph(col->glyph[i]);
+                    attroff(a);
+                }
+                if (x + 1 < COLS) {
+                    /* Explicit blank so wide-rendered glyphs (kitty PUA) get their second cell. */
+                    move(row, x + 1);
+                    addch(' ');
+                }
+            }
+        }
+        refresh();
+        napms(*update * 10);
+    }
+}
+
 int main(int argc, char *argv[]) {
     int i, y, z, optchr, keypress;
     int j = 0;
@@ -315,7 +547,7 @@ int main(int argc, char *argv[]) {
 
     /* Many thanks to morph- (morph@jmss.com) for this getopt patch */
     opterr = 0;
-    while ((optchr = getopt(argc, argv, "abBcfhHlLnrosmxVu:C:")) != EOF) {
+    while ((optchr = getopt(argc, argv, "abBcfhHlLnrRosmxVu:C:")) != EOF) {
         switch (optchr) {
         case 's':
             screensaver = 1;
@@ -359,6 +591,9 @@ int main(int argc, char *argv[]) {
             break;
         case 'H':
             hebrew = 1;
+            break;
+        case 'R':
+            reality = 1;
             break;
         case 'f':
             force = 1;
@@ -478,6 +713,10 @@ if (console) {
     randnum = highnum - randmin;
 
     var_init();
+
+    if (reality) {
+        reality_loop(screensaver, &update);
+    }
 
     while (1) {
         /* Check for signals */

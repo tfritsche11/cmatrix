@@ -1,8 +1,13 @@
 # CMatrix
 
-> **Fork note:** this fork (branch `hebrew`, based on the `v2.0` release) adds one option:
-> `-H` rains the 22 Hebrew letters alef..tav (U+05D0..U+05EA without final forms).
-> It needs a terminal font with Hebrew glyphs. Example: `cmatrix -s -H`.
+> **Fork note:** this fork (branch `hebrew`, based on the `v2.0` release) adds two options:
+> - `-H` rains the 22 Hebrew letters alef..tav (U+05D0..U+05EA without final forms).
+>   It needs a terminal font with Hebrew glyphs. Example: `cmatrix -s -H`.
+> - `-R` ports the background animation of [codeofreality.org](https://codeofreality.org):
+>   full-height strips falling at their own speed, flickering glyphs, and a Nord Aurora
+>   orange gradient (needs 256 colors). Glyphs are the Private Use codepoints U+E100..U+E11D;
+>   **no font is included**, map that range to a glyph font yourself, e.g. in kitty
+>   `symbol_map U+E100-U+E11D <font family>`. `-R -H` uses the Hebrew letters instead.
 >
 > Why Hebrew? Inspired by reports of Hebrew-like "source code" glyphs, see
 > [Inside the DMT Laser Experiment](https://www.youtube.com/watch?v=wlLTLIGDZp8).
