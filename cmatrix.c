@@ -292,9 +292,14 @@ void resize_screen(void) {
 }
 
 /* -R "reality" mode: the falling-glyph background of codeofreality.org, ported to the terminal.
- * Every 2nd column holds one strip of LINES+10 glyphs that spans the whole screen height; its
- * bottom glyph is the head. Strips fall at their own speed, glyphs flicker, and the color runs in
- * Nord Aurora orange (nord12) from near-black at the top to a bold head (256-color terminals).
+ * Every 2nd column holds one strip about a screen height long; its bottom glyph is the head. Strips
+ * fall at their own speed, glyphs flicker slowly, and the color runs in Nord Aurora orange (nord12)
+ * from near-black at the top to a bold head (256-color terminals).
+ *
+ * Unlike the site, a strip enters with its head from above the screen and is recycled once only its
+ * darkest part is left on screen. With the site's rule (restart at y in [-H/2, 0], strip longer than
+ * the screen) the heads soon leave at the bottom and the screen turns dark after ~30 s; this rule
+ * keeps the brightness of the first seconds (simulated: steady ~60 % lit, ~30 % bright cells).
  *
  * Output glyphs (not to be confused with the internal HEBREW_BASE cell values): by default the 30
  * Private Use codepoints U+E100..U+E11D, one per char of "abcdefghijklmnopqrstuvwxyz1234". No font is
@@ -302,23 +307,32 @@ void resize_screen(void) {
  * With -H the strips use the Hebrew letters instead. */
 #define REALITY_PUA_BASE 0xE100
 #define REALITY_PUA_COUNT 30
-#define REALITY_TAIL_EXTRA 10        /* strip length = LINES + 10, as on the site */
+/* Strip length: LINES * (1.0 .. 1.3) + 8 glyphs. */
+#define REALITY_LEN_MIN 1.0
+#define REALITY_LEN_SPAN 0.3
+#define REALITY_LEN_EXTRA 8
+/* Recycle when only the top 60 % of the strip (the two darkest color steps) is still visible. */
+#define REALITY_RECYCLE_DARK 0.6
+/* Random gap above the screen before a head enters, as a fraction of LINES. */
+#define REALITY_ENTRY_GAP 0.1
 /* Site: 0.5..2.0 px/frame at 60 fps in 16 px cells, times its idle (no scroll) factor 0.3. */
 #define REALITY_SPEED_MIN 0.5625
 #define REALITY_SPEED_SPAN 1.6875
-#define REALITY_MUTATE_PER_S 1.2     /* 2 % per 60 fps frame */
+/* Glyph changes per glyph per second (~one change every 8 s; the site's 1.2/s is too busy here). */
+#define REALITY_MUTATE_PER_S 0.12
 
 enum { RP_TAIL = 10, RP_DARK, RP_RED, RP_DEEP, RP_ORANGE, RP_HEAD };
 
 typedef struct {
     double y;                        /* row of the strip's top glyph; negative = above the screen */
     double speed;                    /* rows per second */
-    unsigned char *glyph;            /* LINES + REALITY_TAIL_EXTRA glyph indices */
+    int len;                         /* glyphs in this strip (<= reality_maxlen) */
+    unsigned char *glyph;            /* reality_maxlen glyph indices */
 } reality_col;
 
 static reality_col *reality_cols = NULL;
 static int reality_ncols = 0;
-static int reality_len = 0;
+static int reality_maxlen = 0;
 static char reality_pua[REALITY_PUA_COUNT][4];
 
 static double reality_rand01(void) {
@@ -334,9 +348,23 @@ static int reality_floor(double v) {
     return (v < 0 && (double) i != v) ? i - 1 : i;
 }
 
-static void reality_fill(reality_col *c) {
+/* New strip: random length, speed and glyphs. init = 1 places it anywhere in its life cycle (so the
+ * first seconds already look like the steady state); otherwise its head waits just above the screen. */
+static void reality_spawn(reality_col *c, int init) {
     int n = reality_glyph_count();
-    for (int k = 0; k < reality_len; k++) {
+    c->len = (int) (LINES * (REALITY_LEN_MIN + reality_rand01() * REALITY_LEN_SPAN)) + REALITY_LEN_EXTRA;
+    if (c->len > reality_maxlen) {
+        c->len = reality_maxlen;
+    }
+    c->speed = REALITY_SPEED_MIN + reality_rand01() * REALITY_SPEED_SPAN;
+    double start = -c->len - reality_rand01() * LINES * REALITY_ENTRY_GAP;
+    if (init) {
+        double end = LINES - REALITY_RECYCLE_DARK * c->len;
+        c->y = start + reality_rand01() * (end - start);
+    } else {
+        c->y = start;
+    }
+    for (int k = 0; k < c->len; k++) {
         c->glyph[k] = (unsigned char) (rand() % n);
     }
 }
@@ -353,14 +381,12 @@ static void reality_free(void) {
 static void reality_init(void) {
     reality_free();
     reality_ncols = (COLS + 1) / 2;
-    reality_len = LINES + REALITY_TAIL_EXTRA;
+    reality_maxlen = (int) (LINES * (REALITY_LEN_MIN + REALITY_LEN_SPAN)) + REALITY_LEN_EXTRA + 1;
     reality_cols = nmalloc(sizeof(reality_col) * reality_ncols);
     for (int j = 0; j < reality_ncols; j++) {
         reality_col *c = &reality_cols[j];
-        c->glyph = nmalloc((size_t) reality_len);
-        c->y = -reality_rand01() * LINES;
-        c->speed = REALITY_SPEED_MIN + reality_rand01() * REALITY_SPEED_SPAN;
-        reality_fill(c);
+        c->glyph = nmalloc((size_t) reality_maxlen);
+        reality_spawn(c, 1);
     }
 }
 
@@ -399,10 +425,10 @@ static void reality_colors(void) {
     }
 }
 
-/* Color pair and attributes for glyph i of a strip (0 = top, reality_len - 1 = head). */
-static attr_t reality_attr(int i) {
-    double l = (double) i / (double) reality_len;
-    if (i == reality_len - 1) {
+/* Color pair and attributes for glyph i of a strip of len glyphs (0 = top, len - 1 = head). */
+static attr_t reality_attr(int i, int len) {
+    double l = (double) i / (double) len;
+    if (i == len - 1) {
         return COLOR_PAIR(RP_HEAD) | A_BOLD;
     }
     if (l > 0.9) {
@@ -487,10 +513,9 @@ static void reality_loop(int screensaver, int *update) {
             reality_col *col = &reality_cols[c];
             if (!pause) {
                 col->y += col->speed * dt;
-                if (col->y > LINES) {
-                    /* Whole strip has left the screen: restart above it with fresh glyphs. */
-                    col->y = -reality_rand01() * LINES * 0.5;
-                    reality_fill(col);
+                if (col->y > LINES - REALITY_RECYCLE_DARK * col->len) {
+                    /* Only the darkest part is left on screen: start a new strip above it. */
+                    reality_spawn(col, 0);
                 }
             }
             int top = reality_floor(col->y);
@@ -498,13 +523,13 @@ static void reality_loop(int screensaver, int *update) {
             for (int row = 0; row < LINES; row++) {
                 int i = row - top;
                 move(row, x);
-                if (i < 0 || i >= reality_len) {
+                if (i < 0 || i >= col->len) {
                     addch(' ');
                 } else {
                     if (!pause && reality_rand01() < mutate) {
                         col->glyph[i] = (unsigned char) (rand() % n);
                     }
-                    attr_t a = reality_attr(i);
+                    attr_t a = reality_attr(i, col->len);
                     attron(a);
                     reality_draw_glyph(col->glyph[i]);
                     attroff(a);
